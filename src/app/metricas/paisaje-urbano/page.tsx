@@ -1,0 +1,30 @@
+import { getMetricasData, warmMetricasCache } from "../../../lib/metricas"
+import MetricasScreen from "../screen"
+
+export const dynamic = "force-dynamic"
+
+warmMetricasCache("paisaje-urbano")
+
+async function getData() {
+  try {
+    return await getMetricasData("paisaje-urbano")
+  } catch (error) {
+    console.error(error)
+    return null
+  }
+}
+
+export default async function PaisajeUrbanoPage() {
+  const data = await getData()
+
+  return (
+    <MetricasScreen
+      data={data}
+      apiPath="/api/paisaje-urbano"
+      title="Ministerio de Espacio Publico"
+      subtitle="Subsecretaria de Mantenimiento - Direccion General de Paisaje Urbano"
+      externalUrl="https://drive.google.com/file/d/1bKrsHLjJ4b5xnpKeKZydkFFNyXjSEOJP/view?usp=sharing"
+      externalLabel="Ver mas en Power BI"
+    />
+  )
+}
