@@ -23,7 +23,6 @@ export default async function PaisajeUrbanoPage() {
       apiPath="/api/paisaje-urbano"
       title="Ministerio de Espacio Publico"
       subtitle="Subsecretaria de Mantenimiento - Direccion General de Paisaje Urbano"
-      externalUrl="https://drive.google.com/file/d/1bKrsHLjJ4b5xnpKeKZydkFFNyXjSEOJP/view?usp=sharing"
       externalLabel="Ver mas en Power BI"
     />
   )

@@ -13,12 +13,15 @@ export function buildMetricasExcelContent(
   datasetKey: MetricasDatasetKey
 ) {
   const headers = [
+    "Aviso",
     "Fecha de ingreso",
     "Hora de ingreso",
     "Comuna",
     "Barrio",
     "Categoria",
     "Prestacion",
+    "Grupo planificacion",
+    "Status usuario",
     "Estado",
     "Motivo denegado",
     "Ultimo mes",
@@ -28,12 +31,15 @@ export function buildMetricasExcelContent(
     .map(
       (row) => `
         <tr>
+          <td>${escapeHtml(row.aviso)}</td>
           <td>${escapeHtml(row.fecha_ingreso)}</td>
           <td>${escapeHtml(row.hora_ingreso)}</td>
           <td>${escapeHtml(row.comuna)}</td>
           <td>${escapeHtml(row.barrio)}</td>
           <td>${escapeHtml(row.categoria)}</td>
           <td>${escapeHtml(row.prestacion)}</td>
+          <td>${escapeHtml(row.grupo_planificacion)}</td>
+          <td>${escapeHtml(row.status_usuario)}</td>
           <td>${escapeHtml(row.estado)}</td>
           <td>${escapeHtml(row.motivo_denegado)}</td>
           <td>${escapeHtml(row.ult_mes)}</td>

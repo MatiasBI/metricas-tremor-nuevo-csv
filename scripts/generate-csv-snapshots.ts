@@ -8,12 +8,15 @@ type EstadoClave = "resueltos" | "pendientes" | "denegados"
 type DatasetKey = "alumbrado" | "paisaje-urbano"
 
 type NormalizedRow = {
+  aviso: string | null
   fecha: string | null
   horaIngreso: string | null
   comuna: string | null
   barrio: string | null
   categoria: string | null
   prestacion: string | null
+  grupoPlanificacion: string | null
+  statusUsuario: string | null
   motivoDenegado: string | null
   estado: EstadoClave | null
   ultMes: string
@@ -33,11 +36,13 @@ type Snapshot = {
 type CsvRow = string[]
 
 const DEFAULT_CSV_PATH =
-  "D:\\Descargas\\descargaprd6-05\\descargaprd6-05.csv"
+  "C:\\Users\\Usuario\\Downloads\\avisos_20260507_154442.csv"
 
 const CSV_PATH = process.env.METRICAS_CSV_PATH || DEFAULT_CSV_PATH
 const CSV_URL = process.env.METRICAS_CSV_URL
 const OUT_DIR = path.join(process.cwd(), "src", "data", "metricas-demo")
+const DEFAULT_CSV_DELIMITER = "|"
+const DEFAULT_CSV_FROM_LINE = 1
 
 const VALID_COMUNAS = new Set(
   Array.from({ length: 15 }, (_, index) => `C${String(index + 1).padStart(2, "0")}`)
@@ -53,6 +58,8 @@ const ALUMBRADO_PRESTACIONES = new Set([
   "TOMA DE ENERGIA: FALTANTE O DETERIORADA",
   "LUMINARIA: REFUERZO DE ALUMBRADO PUBLICO",
 ])
+
+const ALUMBRADO_GRUPOS_EXCLUIDOS = new Set(["ALU", "ALD"])
 
 const PAISAJE_GRUPOS = new Set(["EV1", "OR1", "OR2"])
 
@@ -136,6 +143,10 @@ function normalizeEstado(value: string) {
   return STATUS_MAP[normalizeText(value).toUpperCase()] ?? null
 }
 
+function normalizeStatusUsuario(value: string) {
+  return normalizeText(value).toUpperCase() || null
+}
+
 function get(row: CsvRow, index: number) {
   return row[index] ?? ""
 }
@@ -154,7 +165,10 @@ function getDatasetKey(row: CsvRow): DatasetKey | null {
   const prestacion = normalizeText(get(row, COLUMN.prestacion))
   const grupo = normalizeText(get(row, COLUMN.grupoPlanificacion)).toUpperCase()
 
-  if (ALUMBRADO_PRESTACIONES.has(prestacion)) {
+  if (
+    (grupo.startsWith("AL") && !ALUMBRADO_GRUPOS_EXCLUIDOS.has(grupo)) ||
+    ALUMBRADO_PRESTACIONES.has(prestacion)
+  ) {
     return "alumbrado"
   }
 
@@ -175,16 +189,24 @@ function getCategoria(row: CsvRow, datasetKey: DatasetKey) {
 
 function normalizeRow(row: CsvRow, datasetKey: DatasetKey): NormalizedRow {
   const fecha = parseDate(get(row, COLUMN.fechaAviso))
+  const aviso = normalizeText(get(row, COLUMN.aviso))
   const prestacion = normalizeText(get(row, COLUMN.prestacion))
+  const grupoPlanificacion = normalizeText(get(row, COLUMN.grupoPlanificacion)).toUpperCase()
+  const statusUsuario = normalizeStatusUsuario(get(row, COLUMN.statusUsuario))
+  const estado = normalizeEstado(get(row, COLUMN.statusUsuario))
+
   return {
+    aviso: aviso || null,
     fecha,
     horaIngreso: parseTime(get(row, COLUMN.horaIngreso)),
     comuna: normalizeComuna(get(row, COLUMN.comuna)),
     barrio: normalizeText(get(row, COLUMN.barrio)) || null,
     categoria: getCategoria(row, datasetKey),
     prestacion: prestacion || null,
-    motivoDenegado: null,
-    estado: normalizeEstado(get(row, COLUMN.statusUsuario)),
+    grupoPlanificacion: grupoPlanificacion || null,
+    statusUsuario,
+    motivoDenegado: estado === "denegados" ? statusUsuario : null,
+    estado,
     ultMes: "",
   }
 }
@@ -229,12 +251,19 @@ async function createInputStream() {
     throw new Error(`No se pudo descargar el CSV: ${response.status}`)
   }
 
+  const contentType = response.headers.get("content-type") ?? ""
+
+  if (contentType.includes("text/html")) {
+    throw new Error(
+      "La URL configurada devolvio HTML. Usa un link directo al CSV crudo diario."
+    )
+  }
+
   return Readable.fromWeb(response.body as import("stream/web").ReadableStream)
 }
 
 async function fetchDownloadResponse(url: string) {
-  const downloadUrl = resolveDownloadUrl(url)
-  const response = await fetch(downloadUrl)
+  const response = await fetch(resolveDownloadUrl(url))
   const contentType = response.headers.get("content-type") ?? ""
 
   if (!isGoogleDriveUrl(url) || !contentType.includes("text/html")) {
@@ -245,7 +274,10 @@ async function fetchDownloadResponse(url: string) {
   const confirmedUrl = resolveGoogleDriveConfirmUrl(html)
 
   if (!confirmedUrl) {
-    throw new Error("Google Drive devolvio una pagina HTML y no se pudo confirmar la descarga")
+    return new Response(html, {
+      status: response.status,
+      headers: response.headers,
+    })
   }
 
   return fetch(confirmedUrl, {
@@ -253,6 +285,42 @@ async function fetchDownloadResponse(url: string) {
       cookie: response.headers.get("set-cookie") ?? "",
     },
   })
+}
+
+async function detectCsvFormat() {
+  let sample = ""
+
+  if (!CSV_URL) {
+    const handle = await fs.open(CSV_PATH, "r")
+    try {
+      const buffer = Buffer.alloc(4096)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+      sample = buffer.toString("utf8", 0, bytesRead)
+    } finally {
+      await handle.close()
+    }
+  }
+
+  if (!sample) {
+    return {
+      delimiter: process.env.METRICAS_CSV_DELIMITER || DEFAULT_CSV_DELIMITER,
+      fromLine: Number(process.env.METRICAS_CSV_FROM_LINE || DEFAULT_CSV_FROM_LINE),
+    }
+  }
+
+  const [firstLine = ""] = sample.split(/\r?\n/)
+  const pipeCount = (firstLine.match(/\|/g) ?? []).length
+  const semicolonCount = (firstLine.match(/;/g) ?? []).length
+  const delimiter = process.env.METRICAS_CSV_DELIMITER || (pipeCount > semicolonCount ? "|" : ";")
+  const hasHeader =
+    /aviso/i.test(firstLine) ||
+    /[áa]rea de empresa/i.test(firstLine) ||
+    /status de usuario/i.test(firstLine)
+
+  return {
+    delimiter,
+    fromLine: Number(process.env.METRICAS_CSV_FROM_LINE || (hasHeader ? 2 : 1)),
+  }
 }
 
 function resolveDownloadUrl(url: string) {
@@ -305,10 +373,12 @@ async function main() {
   let skippedRows = 0
 
   const input = await createInputStream()
+  const csvFormat = await detectCsvFormat()
   const parser = parse({
-    delimiter: ";",
-    from_line: 2,
+    delimiter: csvFormat.delimiter,
+    from_line: csvFormat.fromLine,
     relax_column_count: true,
+    quote: false,
   })
 
   for await (const row of input.pipe(parser) as AsyncIterable<CsvRow>) {
@@ -347,6 +417,7 @@ async function main() {
 
   console.log(`Filas leidas: ${totalRows.toLocaleString("es-AR")}`)
   console.log(`Filas descartadas por campos base: ${skippedRows.toLocaleString("es-AR")}`)
+  console.log(`Formato CSV: delimiter=${JSON.stringify(csvFormat.delimiter)} from_line=${csvFormat.fromLine}`)
 }
 
 main().catch((error) => {

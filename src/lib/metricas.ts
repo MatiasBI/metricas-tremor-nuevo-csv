@@ -1,17 +1,23 @@
 import { promises as fs } from "fs"
+import { createReadStream } from "fs"
 import path from "path"
+import { Readable } from "stream"
+import { parse } from "csv-parse"
 
 import { BARRIOS_BY_COMUNA } from "./barrios"
 
 type EstadoClave = "resueltos" | "pendientes" | "denegados"
 
 type NormalizedRow = {
+  aviso?: string | null
   fecha: Date | null
   horaIngreso: string | null
   comuna: string | null
   barrio: string | null
   categoria: string | null
   prestacion: string | null
+  grupoPlanificacion?: string | null
+  statusUsuario?: string | null
   motivoDenegado: string | null
   estado: EstadoClave | null
   ultMes: string
@@ -33,6 +39,8 @@ type PersistedDatasetSnapshot = {
   filtros: DatasetSnapshot["filtros"]
 }
 
+type CsvRow = string[]
+
 type FiltrosMetricas = {
   years?: string[]
   months?: string[]
@@ -43,12 +51,15 @@ type FiltrosMetricas = {
 }
 
 export type MetricasExportRow = {
+  aviso: string
   fecha_ingreso: string
   hora_ingreso: string
   comuna: string
   barrio: string
   categoria: string
   prestacion: string
+  grupo_planificacion: string
+  status_usuario: string
   estado: string
   motivo_denegado: string
   ult_mes: string
@@ -128,6 +139,12 @@ export type MetricasDatasetKey =
 
 const CACHE_TTL_MS = 15 * 60 * 1000
 const DEMO_SNAPSHOT_DIR = path.join(process.cwd(), "src", "data", "metricas-demo")
+const DEFAULT_CSV_PATH =
+  "C:\\Users\\Usuario\\Downloads\\avisos_20260507_154442.csv"
+const CSV_PATH = process.env.METRICAS_CSV_PATH || DEFAULT_CSV_PATH
+const CSV_URL = process.env.METRICAS_CSV_URL
+const DEFAULT_CSV_DELIMITER = "|"
+const DEFAULT_CSV_FROM_LINE = 1
 const CACHE_FILE_NAMES: Record<MetricasDatasetKey, string> = {
   alumbrado: "metricas-alumbrado-dataset.json",
   "paisaje-urbano": "metricas-paisaje-urbano-dataset.json",
@@ -152,6 +169,160 @@ const MESES_ES = [
   "noviembre",
   "diciembre",
 ]
+
+const VALID_COMUNAS = new Set(
+  Array.from({ length: 15 }, (_, index) => `C${String(index + 1).padStart(2, "0")}`)
+)
+
+const ALUMBRADO_PRESTACIONES = new Set([
+  "COLUMNA DE ALUMBRADO: TAPA FALT Y/O DETE",
+  "LUMINARIA: APAGADA",
+  "LUMINARIA: ARTEFACTO ROTO Y/O FALTANTE",
+  "LUMINARIA: ENCENDIDO INTERMITENTE",
+  "LUMINARIA: ENCENDIDO PERMANENTE",
+  "LUMINARIA: LIMPIEZA DE ARTEFACTO",
+  "TOMA DE ENERGIA: FALTANTE O DETERIORADA",
+  "LUMINARIA: REFUERZO DE ALUMBRADO PUBLICO",
+])
+
+const ALUMBRADO_GRUPOS_EXCLUIDOS = new Set(["ALU", "ALD"])
+const PAISAJE_GRUPOS = new Set(["EV1", "OR1", "OR2"])
+
+const STATUS_MAP: Record<string, EstadoClave> = {
+  REOK: "resueltos",
+  OPER: "pendientes",
+  INIC: "pendientes",
+  PLAN: "pendientes",
+  VERI: "pendientes",
+  PROG: "pendientes",
+  FREN: "pendientes",
+  SERV: "pendientes",
+  IM01: "denegados",
+  IM02: "denegados",
+  IM03: "denegados",
+  IM04: "denegados",
+  IM05: "denegados",
+  CANC: "denegados",
+  TERC: "denegados",
+  OTRA: "denegados",
+}
+
+const COLUMN = {
+  comuna: 0,
+  aviso: 2,
+  barrio: 6,
+  fechaAviso: 9,
+  prestacion: 16,
+  grupoPlanificacion: 22,
+  horaIngreso: 25,
+  statusUsuario: 37,
+  tipo: 39,
+} as const
+
+function normalizeText(value: string) {
+  return value.trim().replace(/\s+/g, " ")
+}
+
+function normalizeComuna(value: string) {
+  const comuna = normalizeText(value).toUpperCase()
+  return VALID_COMUNAS.has(comuna) ? comuna : null
+}
+
+function parseCsvDate(value: string) {
+  const raw = normalizeText(value)
+
+  if (!/^\d{8}$/.test(raw)) {
+    return null
+  }
+
+  const year = Number(raw.slice(0, 4))
+  const month = Number(raw.slice(4, 6))
+  const day = Number(raw.slice(6, 8))
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function parseCsvTime(value: string) {
+  const raw = normalizeText(value).padStart(6, "0")
+
+  if (!/^\d{6}$/.test(raw)) {
+    return null
+  }
+
+  const hours = Number(raw.slice(0, 2))
+  const minutes = Number(raw.slice(2, 4))
+  const seconds = Number(raw.slice(4, 6))
+
+  if (hours > 23 || minutes > 59 || seconds > 59) {
+    return null
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`
+}
+
+function normalizeEstado(value: string) {
+  return STATUS_MAP[normalizeText(value).toUpperCase()] ?? null
+}
+
+function get(row: CsvRow, index: number) {
+  return row[index] ?? ""
+}
+
+function isCoreCsvRow(row: CsvRow) {
+  return Boolean(
+    normalizeComuna(get(row, COLUMN.comuna)) &&
+      normalizeText(get(row, COLUMN.aviso)) &&
+      parseCsvDate(get(row, COLUMN.fechaAviso)) &&
+      normalizeText(get(row, COLUMN.prestacion)) &&
+      normalizeEstado(get(row, COLUMN.statusUsuario))
+  )
+}
+
+function getCsvDatasetKey(row: CsvRow): MetricasDatasetKey | null {
+  const prestacion = normalizeText(get(row, COLUMN.prestacion))
+  const grupo = normalizeText(get(row, COLUMN.grupoPlanificacion)).toUpperCase()
+
+  if (
+    (grupo.startsWith("AL") && !ALUMBRADO_GRUPOS_EXCLUIDOS.has(grupo)) ||
+    ALUMBRADO_PRESTACIONES.has(prestacion)
+  ) {
+    return "alumbrado"
+  }
+
+  if (PAISAJE_GRUPOS.has(grupo)) {
+    return "paisaje-urbano"
+  }
+
+  return null
+}
+
+function normalizeCsvRow(row: CsvRow, datasetKey: MetricasDatasetKey): NormalizedRow {
+  const fecha = parseCsvDate(get(row, COLUMN.fechaAviso))
+  const aviso = normalizeText(get(row, COLUMN.aviso))
+  const prestacion = normalizeText(get(row, COLUMN.prestacion))
+  const grupoPlanificacion = normalizeText(get(row, COLUMN.grupoPlanificacion)).toUpperCase()
+  const statusUsuario = normalizeText(get(row, COLUMN.statusUsuario)).toUpperCase() || null
+  const estado = normalizeEstado(get(row, COLUMN.statusUsuario))
+
+  return {
+    aviso: aviso || null,
+    fecha,
+    horaIngreso: parseCsvTime(get(row, COLUMN.horaIngreso)),
+    comuna: normalizeComuna(get(row, COLUMN.comuna)),
+    barrio: normalizeText(get(row, COLUMN.barrio)) || null,
+    categoria:
+      datasetKey === "alumbrado"
+        ? prestacion || null
+        : normalizeText(get(row, COLUMN.tipo)) || null,
+    prestacion: prestacion || null,
+    grupoPlanificacion: grupoPlanificacion || null,
+    statusUsuario,
+    motivoDenegado: estado === "denegados" ? statusUsuario : null,
+    estado,
+    ultMes: "",
+  }
+}
 
 function formatearUltimaActualizacion(fecha: Date | null, ultMes?: string) {
   if (ultMes?.trim()) return ultMes.trim()
@@ -356,6 +527,213 @@ async function readDemoSnapshot(datasetKey: MetricasDatasetKey) {
   }
 }
 
+function buildDatasetSnapshot(rows: NormalizedRow[]): DatasetSnapshot {
+  const years = new Set<string>()
+  const prestaciones = new Set<string>()
+  const categorias = new Set<string>()
+  const comunas = new Set<string>()
+  const barrios = new Set<string>()
+
+  for (const row of rows) {
+    if (row.fecha) years.add(String(row.fecha.getUTCFullYear()))
+    if (row.prestacion) prestaciones.add(row.prestacion)
+    if (row.categoria) categorias.add(row.categoria)
+    if (row.comuna) comunas.add(row.comuna)
+    if (row.barrio) barrios.add(row.barrio)
+  }
+
+  return {
+    rows,
+    filtros: {
+      years: Array.from(years).sort(),
+      prestaciones: Array.from(prestaciones).sort(),
+      categorias: Array.from(categorias).sort(),
+      comunas: Array.from(comunas).sort(),
+      barrios: Array.from(barrios).sort(),
+    },
+  }
+}
+
+async function createCsvInputStream() {
+  if (!CSV_URL) {
+    return createReadStream(CSV_PATH)
+  }
+
+  const response = await fetchCsvDownloadResponse(CSV_URL)
+
+  if (!response.ok || !response.body) {
+    throw new Error(`No se pudo descargar el CSV crudo: ${response.status}`)
+  }
+
+  const contentType = response.headers.get("content-type") ?? ""
+
+  if (contentType.includes("text/html")) {
+    throw new Error(
+      "METRICAS_CSV_URL devolvio HTML. Configura un link directo al CSV crudo diario."
+    )
+  }
+
+  return Readable.fromWeb(response.body as import("stream/web").ReadableStream)
+}
+
+async function fetchCsvDownloadResponse(url: string) {
+  const response = await fetch(resolveCsvDownloadUrl(url))
+  const contentType = response.headers.get("content-type") ?? ""
+
+  if (!isGoogleDriveUrl(url) || !contentType.includes("text/html")) {
+    return response
+  }
+
+  const html = await response.text()
+  const confirmedUrl = resolveGoogleDriveConfirmUrl(html)
+
+  if (!confirmedUrl) {
+    return new Response(html, {
+      status: response.status,
+      headers: response.headers,
+    })
+  }
+
+  return fetch(confirmedUrl, {
+    headers: {
+      cookie: response.headers.get("set-cookie") ?? "",
+    },
+  })
+}
+
+function resolveCsvDownloadUrl(url: string) {
+  const match = url.match(/drive\.google\.com\/file\/d\/([^/]+)/)
+
+  if (!match) {
+    return url
+  }
+
+  return `https://drive.google.com/uc?export=download&id=${match[1]}`
+}
+
+function isGoogleDriveUrl(url: string) {
+  return url.includes("drive.google.com")
+}
+
+function resolveGoogleDriveConfirmUrl(html: string) {
+  const actionMatch = html.match(/<form[^>]+id="download-form"[^>]+action="([^"]+)"/)
+
+  if (!actionMatch) {
+    return null
+  }
+
+  const params = new URLSearchParams()
+  const inputPattern = /<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"/g
+  let inputMatch: RegExpExecArray | null
+
+  while ((inputMatch = inputPattern.exec(html))) {
+    params.set(decodeHtml(inputMatch[1]), decodeHtml(inputMatch[2]))
+  }
+
+  return `${decodeHtml(actionMatch[1])}?${params.toString()}`
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+}
+
+async function getCsvParserConfig() {
+  if (CSV_URL) {
+    return {
+      delimiter: process.env.METRICAS_CSV_DELIMITER || DEFAULT_CSV_DELIMITER,
+      fromLine: Number(process.env.METRICAS_CSV_FROM_LINE || DEFAULT_CSV_FROM_LINE),
+    }
+  }
+
+  const handle = await fs.open(CSV_PATH, "r")
+  try {
+    const buffer = Buffer.alloc(4096)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    const sample = buffer.toString("utf8", 0, bytesRead)
+    const [firstLine = ""] = sample.split(/\r?\n/)
+    const pipeCount = (firstLine.match(/\|/g) ?? []).length
+    const semicolonCount = (firstLine.match(/;/g) ?? []).length
+    const delimiter =
+      process.env.METRICAS_CSV_DELIMITER ||
+      (pipeCount > semicolonCount ? "|" : ";")
+    const hasHeader =
+      /aviso/i.test(firstLine) ||
+      /[áa]rea de empresa/i.test(firstLine) ||
+      /status de usuario/i.test(firstLine)
+
+    return {
+      delimiter,
+      fromLine: Number(process.env.METRICAS_CSV_FROM_LINE || (hasHeader ? 2 : 1)),
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+async function buildSnapshotsFromCsv() {
+  const rowsByDataset: Record<MetricasDatasetKey, NormalizedRow[]> = {
+    alumbrado: [],
+    "paisaje-urbano": [],
+  }
+
+  const input = await createCsvInputStream()
+  const csvConfig = await getCsvParserConfig()
+  const parser = parse({
+    delimiter: csvConfig.delimiter,
+    from_line: csvConfig.fromLine,
+    relax_column_count: true,
+    quote: false,
+  })
+
+  for await (const row of input.pipe(parser) as AsyncIterable<CsvRow>) {
+    if (!isCoreCsvRow(row)) {
+      continue
+    }
+
+    const datasetKey = getCsvDatasetKey(row)
+
+    if (!datasetKey) {
+      continue
+    }
+
+    rowsByDataset[datasetKey].push(normalizeCsvRow(row, datasetKey))
+  }
+
+  return {
+    alumbrado: buildDatasetSnapshot(rowsByDataset.alumbrado),
+    "paisaje-urbano": buildDatasetSnapshot(rowsByDataset["paisaje-urbano"]),
+  }
+}
+
+let csvSnapshotBuildPromise:
+  | Promise<Record<MetricasDatasetKey, DatasetSnapshot>>
+  | null = null
+
+async function readCsvSnapshot(datasetKey: MetricasDatasetKey) {
+  if (!CSV_URL && !process.env.METRICAS_CSV_PATH) {
+    return null
+  }
+
+  csvSnapshotBuildPromise ??= buildSnapshotsFromCsv().finally(() => {
+    csvSnapshotBuildPromise = null
+  })
+
+  const snapshots = await csvSnapshotBuildPromise
+
+  await Promise.all(
+    (Object.entries(snapshots) as Array<[MetricasDatasetKey, DatasetSnapshot]>).map(
+      ([key, snapshot]) => persistSnapshotSafely(key, snapshot)
+    )
+  )
+
+  return snapshots[datasetKey]
+}
+
 export function crearResumenVacio(
   filtros: MetricasPayload["filtros"] = {
     years: [],
@@ -421,17 +799,15 @@ async function getCachedDataset(datasetKey: MetricasDatasetKey) {
     return cachedDataset.snapshot
   }
 
-  const demoSnapshot = await readDemoSnapshot(datasetKey)
+  const csvSnapshot = await readCsvSnapshot(datasetKey)
 
-  if (demoSnapshot) {
-    void persistSnapshotSafely(datasetKey, demoSnapshot)
-
+  if (csvSnapshot) {
     datasetCache.set(datasetKey, {
       expiresAt: Date.now() + CACHE_TTL_MS,
-      snapshot: demoSnapshot,
+      snapshot: csvSnapshot,
     })
 
-    return demoSnapshot
+    return csvSnapshot
   }
 
   const persistedSnapshot = await readPersistedSnapshot(datasetKey)
@@ -445,8 +821,19 @@ async function getCachedDataset(datasetKey: MetricasDatasetKey) {
     return persistedSnapshot
   }
 
+  const demoSnapshot = await readDemoSnapshot(datasetKey)
+
+  if (demoSnapshot) {
+    datasetCache.set(datasetKey, {
+      expiresAt: Date.now() + CACHE_TTL_MS,
+      snapshot: demoSnapshot,
+    })
+
+    return demoSnapshot
+  }
+
   throw new Error(
-    `No hay snapshot local para ${datasetKey}. Ejecuta npm run generate-csv-snapshots.`
+    `No hay datos disponibles para ${datasetKey}. Configura METRICAS_CSV_URL o ejecuta npm run generate-csv-snapshots.`
   )
 }
 
@@ -780,11 +1167,14 @@ export async function getMetricasExportRows(
 
   return rowsFiltradas.map((row) => ({
     fecha_ingreso: formatExportDate(row.fecha),
+    aviso: row.aviso ?? "",
     hora_ingreso: row.horaIngreso ?? "",
     comuna: row.comuna ?? "",
     barrio: row.barrio ?? "",
     categoria: row.categoria ?? "",
     prestacion: row.prestacion ?? "",
+    grupo_planificacion: row.grupoPlanificacion ?? "",
+    status_usuario: row.statusUsuario ?? "",
     estado: formatExportEstado(row.estado),
     motivo_denegado: row.motivoDenegado ?? "",
     ult_mes: row.ultMes ?? "",
