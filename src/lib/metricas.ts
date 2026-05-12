@@ -140,7 +140,7 @@ export type MetricasDatasetKey =
 const CACHE_TTL_MS = 15 * 60 * 1000
 const DEMO_SNAPSHOT_DIR = path.join(process.cwd(), "src", "data", "metricas-demo")
 const DEFAULT_CSV_PATH =
-  "C:\\Users\\Usuario\\Downloads\\avisos_20260507_154442.csv"
+  "C:\\Users\\Usuario\\Downloads\\avisos crudo 08-05.csv"
 const CSV_PATH = process.env.METRICAS_CSV_PATH || DEFAULT_CSV_PATH
 const CSV_URL = process.env.METRICAS_CSV_URL
 const DEFAULT_CSV_DELIMITER = "|"
@@ -186,7 +186,33 @@ const ALUMBRADO_PRESTACIONES = new Set([
 ])
 
 const ALUMBRADO_GRUPOS_EXCLUIDOS = new Set(["ALU", "ALD"])
-const PAISAJE_GRUPOS = new Set(["EV1", "OR1", "OR2"])
+const PAISAJE_PRESTACIONES = new Set([
+  "BANCOS EN PARQUES Y PLAZAS: COLOCACION",
+  "SOLICITUD DE INSTALACIÓN DE CANILES",
+  "SOLICITUD DE INST. DE BAÑOS PÚBLICOS",
+  "CESTOS EN PLAZAS Y PARQUES: SOLICITUD",
+  "SOLICITUD DE PATIO DE JUEGOS",
+  "SOLICITUD DE ÁREAS DEPORTIVAS",
+  "FUENTES EN PLAZAS Y PARQUES: SOLICITUD D",
+  "SOLICITUD DE INSTALACIÓN DE BEBEDEROS",
+  "BANCOS EN PARQUES Y PLAZAS: REPARACION",
+  "BANCOS Y MESAS DE PARQUES Y PLAZAS: REPA",
+  "PATIO DE JUEGOS EN PLAZAS Y PARQUES: REP",
+  "INSTALACION DE REJAS EN PARQUE / PLAZA",
+  "REJAS EN PARQUES Y PLAZAS: SOLICITUD",
+  "MANTENIMIENTO DE BAÑOS PÚBLICOS",
+  "MANTENIMIENTO EN SENDEROS / SOLADOS",
+  "REPARACION DE CESTOS EN PLAZAS Y PARQUES",
+  "MONUMENTO Y OBRA DE ARTE EN PLAZAS Y PAR",
+  "FUENTES EN PLAZAS Y PARQUES: DETERIORO",
+  "MANTENIMIENTO DE RIEGO - CÉSPED",
+  "CESPED EN PLAZAS Y PARQUES: CORTE Y LIMP",
+  "RIEGO EN PLAZAS Y PARQUES: MANTENIMIENTO",
+  "MANTENIMIENTO DE CANILES",
+  "CANILES EN PLAZAS Y PARQUES: LIMPIEZA Y/",
+  "MANTENIMIENTO EN BEBEDEROS",
+  "MANTENIMIENTO DE ÁREAS DEPORTIVAS",
+])
 
 const STATUS_MAP: Record<string, EstadoClave> = {
   REOK: "resueltos",
@@ -284,13 +310,14 @@ function getCsvDatasetKey(row: CsvRow): MetricasDatasetKey | null {
   const grupo = normalizeText(get(row, COLUMN.grupoPlanificacion)).toUpperCase()
 
   if (
-    (grupo.startsWith("AL") && !ALUMBRADO_GRUPOS_EXCLUIDOS.has(grupo)) ||
+    grupo.startsWith("AL") &&
+    !ALUMBRADO_GRUPOS_EXCLUIDOS.has(grupo) &&
     ALUMBRADO_PRESTACIONES.has(prestacion)
   ) {
     return "alumbrado"
   }
 
-  if (PAISAJE_GRUPOS.has(grupo)) {
+  if (PAISAJE_PRESTACIONES.has(prestacion)) {
     return "paisaje-urbano"
   }
 
@@ -715,8 +742,12 @@ let csvSnapshotBuildPromise:
   | null = null
 
 async function readCsvSnapshot(datasetKey: MetricasDatasetKey) {
-  if (!CSV_URL && !process.env.METRICAS_CSV_PATH) {
-    return null
+  if (!CSV_URL) {
+    try {
+      await fs.access(CSV_PATH)
+    } catch {
+      return null
+    }
   }
 
   csvSnapshotBuildPromise ??= buildSnapshotsFromCsv().finally(() => {
