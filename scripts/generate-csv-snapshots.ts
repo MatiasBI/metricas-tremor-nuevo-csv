@@ -91,12 +91,12 @@ const PAISAJE_PRESTACIONES = new Set([
 
 const STATUS_MAP: Record<string, EstadoClave> = {
   REOK: "resueltos",
+  TERC: "resueltos",
   OPER: "pendientes",
   INIC: "pendientes",
   PLAN: "pendientes",
   VERI: "pendientes",
   PROG: "pendientes",
-  FREN: "pendientes",
   SERV: "pendientes",
   IM01: "denegados",
   IM02: "denegados",
@@ -104,8 +104,15 @@ const STATUS_MAP: Record<string, EstadoClave> = {
   IM04: "denegados",
   IM05: "denegados",
   CANC: "denegados",
-  TERC: "denegados",
-  OTRA: "denegados",
+}
+
+const DENEGADO_MOTIVOS: Record<string, string> = {
+  CANC: "Cancelado",
+  IM01: "Falla Inexistente",
+  IM02: "Falta Informacion",
+  IM03: "Imposibilidad Tecnica",
+  IM04: "Fuera de Competencia",
+  IM05: "Cancelado por Usuario",
 }
 
 const COLUMN = {
@@ -167,6 +174,10 @@ function parseTime(value: string) {
 
 function normalizeEstado(value: string) {
   return STATUS_MAP[normalizeText(value).toUpperCase()] ?? null
+}
+
+function normalizeMotivoDenegado(value: string) {
+  return DENEGADO_MOTIVOS[normalizeText(value).toUpperCase()] ?? null
 }
 
 function normalizeStatusUsuario(value: string) {
@@ -232,7 +243,7 @@ function normalizeRow(row: CsvRow, datasetKey: DatasetKey): NormalizedRow {
     prestacion: prestacion || null,
     grupoPlanificacion: grupoPlanificacion || null,
     statusUsuario,
-    motivoDenegado: estado === "denegados" ? statusUsuario : null,
+    motivoDenegado: estado === "denegados" ? normalizeMotivoDenegado(get(row, COLUMN.statusUsuario)) : null,
     estado,
     ultMes: "",
   }

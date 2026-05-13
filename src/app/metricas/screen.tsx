@@ -145,6 +145,12 @@ const FilterFab = dynamic(() => import("./FilterFab"), {
   loading: () => null,
 })
 
+function appendValues(params: URLSearchParams, key: string, values: string[]) {
+  for (const value of [...values].sort()) {
+    params.append(key, value)
+  }
+}
+
 function buildMetricasQuery({
   apiPath,
   years,
@@ -157,27 +163,27 @@ function buildMetricasQuery({
   const params = new URLSearchParams()
 
   if (years.length) {
-    params.set("years", [...years].sort().join(","))
+    appendValues(params, "years", years)
   }
 
   if (months.length) {
-    params.set("months", [...months].sort().join(","))
+    appendValues(params, "months", months)
   }
 
   if (prestaciones.length) {
-    params.set("prestacion", [...prestaciones].sort().join(","))
+    appendValues(params, "prestacion", prestaciones)
   }
 
   if (categorias.length) {
-    params.set("categoria", [...categorias].sort().join(","))
+    appendValues(params, "categoria", categorias)
   }
 
   if (comunas.length) {
-    params.set("comuna", [...comunas].sort().join(","))
+    appendValues(params, "comuna", comunas)
   }
 
   if (barrios.length) {
-    params.set("barrio", [...barrios].sort().join(","))
+    appendValues(params, "barrio", barrios)
   }
 
   const query = params.toString()
@@ -224,6 +230,7 @@ export default function MetricasScreen({
     comunas: [],
     barrios: [],
   })
+  const dashboardRequestRef = useRef(0)
 
   const monthsByYear = useMemo(
     () =>
@@ -441,11 +448,31 @@ export default function MetricasScreen({
       ...currentSelections,
     })
 
+    const requestId = dashboardRequestRef.current + 1
+    dashboardRequestRef.current = requestId
+    const controller = new AbortController()
+
     setIsRefreshing(true)
-    fetch(url)
+    fetch(url, { signal: controller.signal })
       .then((res) => res.json())
-      .then(setDashboardData)
-      .finally(() => setIsRefreshing(false))
+      .then((payload) => {
+        if (dashboardRequestRef.current === requestId) {
+          setDashboardData(payload)
+        }
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return
+        }
+        console.error("Error actualizando filtros", error)
+      })
+      .finally(() => {
+        if (dashboardRequestRef.current === requestId) {
+          setIsRefreshing(false)
+        }
+      })
+
+    return () => controller.abort()
   }, [
     apiPath,
     selectedYears,

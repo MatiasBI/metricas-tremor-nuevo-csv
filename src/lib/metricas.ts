@@ -216,12 +216,12 @@ const PAISAJE_PRESTACIONES = new Set([
 
 const STATUS_MAP: Record<string, EstadoClave> = {
   REOK: "resueltos",
+  TERC: "resueltos",
   OPER: "pendientes",
   INIC: "pendientes",
   PLAN: "pendientes",
   VERI: "pendientes",
   PROG: "pendientes",
-  FREN: "pendientes",
   SERV: "pendientes",
   IM01: "denegados",
   IM02: "denegados",
@@ -229,8 +229,15 @@ const STATUS_MAP: Record<string, EstadoClave> = {
   IM04: "denegados",
   IM05: "denegados",
   CANC: "denegados",
-  TERC: "denegados",
-  OTRA: "denegados",
+}
+
+const DENEGADO_MOTIVOS: Record<string, string> = {
+  CANC: "Cancelado",
+  IM01: "Falla Inexistente",
+  IM02: "Falta Informacion",
+  IM03: "Imposibilidad Tecnica",
+  IM04: "Fuera de Competencia",
+  IM05: "Cancelado por Usuario",
 }
 
 const COLUMN = {
@@ -291,6 +298,10 @@ function normalizeEstado(value: string) {
   return STATUS_MAP[normalizeText(value).toUpperCase()] ?? null
 }
 
+function normalizeMotivoDenegado(value: string) {
+  return DENEGADO_MOTIVOS[normalizeText(value).toUpperCase()] ?? null
+}
+
 function get(row: CsvRow, index: number) {
   return row[index] ?? ""
 }
@@ -345,7 +356,7 @@ function normalizeCsvRow(row: CsvRow, datasetKey: MetricasDatasetKey): Normalize
     prestacion: prestacion || null,
     grupoPlanificacion: grupoPlanificacion || null,
     statusUsuario,
-    motivoDenegado: estado === "denegados" ? statusUsuario : null,
+    motivoDenegado: estado === "denegados" ? normalizeMotivoDenegado(get(row, COLUMN.statusUsuario)) : null,
     estado,
     ultMes: "",
   }
@@ -542,6 +553,29 @@ async function readPersistedSnapshot(datasetKey: MetricasDatasetKey) {
   } catch {
     return null
   }
+}
+
+async function readFreshPersistedSnapshot(datasetKey: MetricasDatasetKey) {
+  if (CSV_URL) {
+    return null
+  }
+
+  const datasetCachePath = getDatasetCachePath(datasetKey)
+
+  try {
+    const [csvStat, snapshotStat] = await Promise.all([
+      fs.stat(CSV_PATH),
+      fs.stat(datasetCachePath),
+    ])
+
+    if (snapshotStat.mtimeMs < csvStat.mtimeMs) {
+      return null
+    }
+  } catch {
+    return null
+  }
+
+  return readPersistedSnapshot(datasetKey)
 }
 
 async function readDemoSnapshot(datasetKey: MetricasDatasetKey) {
@@ -828,6 +862,17 @@ async function getCachedDataset(datasetKey: MetricasDatasetKey) {
 
   if (cachedDataset && cachedDataset.expiresAt > now) {
     return cachedDataset.snapshot
+  }
+
+  const freshPersistedSnapshot = await readFreshPersistedSnapshot(datasetKey)
+
+  if (freshPersistedSnapshot) {
+    datasetCache.set(datasetKey, {
+      expiresAt: Date.now() + CACHE_TTL_MS,
+      snapshot: freshPersistedSnapshot,
+    })
+
+    return freshPersistedSnapshot
   }
 
   const csvSnapshot = await readCsvSnapshot(datasetKey)

@@ -5,22 +5,21 @@ import { getMetricasExportRows } from "../../../../lib/metricas"
 
 export const dynamic = "force-dynamic"
 
+function getFilterValues(req: NextRequest, key: string) {
+  const values = req.nextUrl.searchParams.getAll(key)
+  return values.flatMap((value) => value.split(",")).filter(Boolean)
+}
+
 export async function GET(req: NextRequest) {
   try {
     const today = new Date().toISOString().slice(0, 10)
     const rows = await getMetricasExportRows("paisaje-urbano", {
-      years: req.nextUrl.searchParams.get("years")?.split(",").filter(Boolean),
-      months: req.nextUrl.searchParams.get("months")?.split(",").filter(Boolean),
-      prestacion: req.nextUrl.searchParams
-        .get("prestacion")
-        ?.split(",")
-        .filter(Boolean),
-      categoria: req.nextUrl.searchParams
-        .get("categoria")
-        ?.split(",")
-        .filter(Boolean),
-      comuna: req.nextUrl.searchParams.get("comuna")?.split(",").filter(Boolean),
-      barrio: req.nextUrl.searchParams.get("barrio")?.split(",").filter(Boolean),
+      years: getFilterValues(req, "years"),
+      months: getFilterValues(req, "months"),
+      prestacion: getFilterValues(req, "prestacion"),
+      categoria: getFilterValues(req, "categoria"),
+      comuna: getFilterValues(req, "comuna"),
+      barrio: getFilterValues(req, "barrio"),
     })
 
     const content = buildMetricasExcelContent(rows, "paisaje-urbano")
